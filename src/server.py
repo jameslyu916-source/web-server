@@ -148,12 +148,23 @@ def handle_client_connection(connection_socket, client_address):
             file_mtime = os.path.getmtime(file_path)
             file_mtime_http = get_http_time(file_mtime)
             
-            # Check If-Modified-Since header (304 Not Modified)
+                       # Check If-Modified-Since header (304 Not Modified)
+            # FIXED: Use UTC time for all comparisons to avoid timezone bugs
             if 'if-modified-since' in headers:
                 try:
-                    client_mtime = time.mktime(time.strptime(headers['if-modified-since'], '%a, %d %b %Y %H:%M:%S GMT'))
-                    # Allow 1 second tolerance for clock differences
-                    if file_mtime <= client_mtime + 1:
+                    # Parse client's If-Modified-Since time (which is in GMT)
+                    # Use strptime and then make it timezone-aware as UTC
+                    from datetime import datetime, timezone
+                    client_mtime_dt = datetime.strptime(headers['if-modified-since'], '%a, %d %b %Y %H:%M:%S GMT')
+                    client_mtime_dt = client_mtime_dt.replace(tzinfo=timezone.utc)
+                    client_mtime = client_mtime_dt.timestamp()
+                    
+                    # Get file mtime as UTC timestamp
+                    file_mtime = os.path.getmtime(file_path)
+                    
+                    # Simple comparison: if file is not newer, return 304
+                    # Add 2 second tolerance to avoid filesystem timestamp precision issues
+                    if file_mtime <= client_mtime + 2:
                         status_code = 304
                         response_headers = (
                             f"{http_version} 304 Not Modified\r\n"
@@ -163,11 +174,13 @@ def handle_client_connection(connection_socket, client_address):
                         )
                         connection_socket.send(response_headers.encode('utf-8'))
                         log_request(client_ip, method, path, status_code)
+                        print(f"[{client_ip}] Response: 304 Not Modified (using cache)")
                         # Check connection header for keep-alive
                         keep_alive = headers.get('connection', '').lower() == 'keep-alive'
                         continue
-                except ValueError:
+                except ValueError as e:
                     # Ignore invalid If-Modified-Since format
+                    print(f"Warning: Invalid If-Modified-Since header: {e}")
                     pass
             
             # Read file content
